@@ -1,4 +1,3 @@
-import { CustomResource } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { CustomStack, CustomStackProps } from './stack';
 import * as events from 'aws-cdk-lib/aws-events';
@@ -6,7 +5,12 @@ import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as chatbot from 'aws-cdk-lib/aws-chatbot';
-import { AwsCustomResource, AwsCustomResourcePolicy, PhysicalResourceId } from 'aws-cdk-lib/custom-resources';
+import * as customResources from 'aws-cdk-lib/custom-resources';
+import * as path from 'path';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as lambdaNodejs from 'aws-cdk-lib/aws-lambda-nodejs';
+import { CustomResource } from 'aws-cdk-lib';
+
 
 export class inspectorStack extends CustomStack {
   constructor(scope: Construct, props: CustomStackProps, stackName: string) {
@@ -29,7 +33,7 @@ export class InspectorStack extends Construct {
         source: ['aws.inspector2'],
         detailType: ['Inspector2 Finding'],
         detail: {
-          severity: [{ exists: true }],
+          severity: ['CRITICAL', 'HIGH'], 
         },
       },
     });
@@ -52,29 +56,34 @@ export class InspectorStack extends Construct {
       role: chatbotRole,
     });
 
-    new AwsCustomResource(this, 'EnableInspector2', {
-      onCreate: {
-        service: 'Inspector2',
-        action: 'enable',
-        parameters: {
-          resourceTypes: ['EC2', 'ECR', 'LAMBDA', 'LAMBDA_CODE'],
-        },
-        physicalResourceId: PhysicalResourceId.of('Inspector2Enabled'),
+    // 5. Lambda Function to enable Inspector2
+    const enableInspectorLambda = new lambdaNodejs.NodejsFunction(this, 'EnableInspectorLambda', {
+      entry: path.join(__dirname, '../lambda/enable-inspector.ts'),
+      runtime: lambda.Runtime.NODEJS_18_X,
+      bundling: {
+        externalModules: [],
       },
-      policy: AwsCustomResourcePolicy.fromStatements([
-        new iam.PolicyStatement({
-          actions: [
-            'inspector2:Enable',
-            'iam:CreateServiceLinkedRole',
-          ],
-          resources: ['*'],
-          conditions: {
-            StringEqualsIfExists: {
-              'iam:AWSServiceName': 'inspector2.amazonaws.com',
-            },
-          },
-        }),
-      ]),
-    });                 
+    });
+
+    // 6. Permissions to allow Lambda to enable Inspector2
+    enableInspectorLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: [
+          'inspector2:Enable',
+          'iam:CreateServiceLinkedRole',
+        ],
+        resources: ['*'],
+      })
+    );
+
+    // 7. Provider for Custom Resource 
+    const provider = new customResources.Provider(this, 'EnableInspectorProvider', {
+      onEventHandler: enableInspectorLambda,
+    });
+
+    // 8. Custom Resource to trigger Lambda via Provider
+    new CustomResource(this, 'EnableInspectorResource', {
+      serviceToken: provider.serviceToken,
+    });
   }
 }
